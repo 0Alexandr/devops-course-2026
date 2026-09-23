@@ -1,1 +1,8 @@
-﻿# Multi-remote test
+# Дисциплина:
+Инструменты девопс
+
+## Пройденые темы:
+1. Введение в DevOps. Установка и первичная настройка Git и GitHub
+2. Ветвление, Pull Request и командная работа в GitHub
+
+# Multi-remote test
