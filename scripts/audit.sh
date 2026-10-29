@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Контроль конфигурации сервера devops-vm (практическая работа № 5)
+# Контроль конфигурации сервера devops-vm (практические работы № 5 и 6)
 set -uo pipefail
 
 PASS=0; FAIL=0
@@ -36,6 +36,20 @@ check "Политика входящего трафика по умолчани�
 
 echo "[3] Учётные записи пользователей"
 awk -F: '$3>=1000 && $3<65534 {printf "  %s (uid=%s)\n",$1,$3}' /etc/passwd
+
+echo "[4] Веб-сервер"
+check "Служба nginx активна" "active" "$(systemctl is-active nginx)"
+check "Конфигурация nginx синтаксически корректна" "0" "$(sudo nginx -t >/dev/null 2>&1; echo $?)"
+
+# порог в днях задаётся переменной CERT_MIN_DAYS (по умолчанию 30)
+CERT_MIN_DAYS="${CERT_MIN_DAYS:-30}"
+check "Сертификат действует ещё не менее ${CERT_MIN_DAYS} дн." "0" \
+      "$(openssl x509 -checkend $((CERT_MIN_DAYS * 86400)) -noout -in /etc/ssl/certs/devops.crt >/dev/null; echo $?)"
+
+WORLD_WRITABLE="$(find /var/www/devops-site -perm -o+w | head -n 3 | tr '\n' ' ')"
+KEY_MODE="$(sudo stat -c '%a' /etc/ssl/private/devops.key)"
+check "Нет файлов ресурса с записью для всех, права ключа 600" "|600" \
+      "${WORLD_WRITABLE% }|${KEY_MODE}"
 
 echo "Пройдено: $PASS, не пройдено: $FAIL"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1
