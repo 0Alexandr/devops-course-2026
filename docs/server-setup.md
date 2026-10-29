@@ -131,6 +131,8 @@ sudo ufw logging medium
 | 03-ssh-hardened | усиленная конфигурация SSH |
 | 04-nginx-https | Nginx, HTTPS, статический ресурс |
 | 05-docker-compose | Docker Engine, проект `app` (приложение + СУБД) |
+| 06-before-kr2 | состояние перед контрольной работой № 2 |
+| 07-kr2 | проект `kr2` (приложение + Redis), ресурс `notes.devops.local` |
 
 ## 8. Веб-сервер
 
@@ -305,6 +307,31 @@ sudo sed -i 's/^127.0.1.1.*/127.0.1.1 devops-vm.devops.local devops-vm/' /etc/ho
 hostname -f   # devops-vm.devops.local
 ```
 
+## 11. Контрольная работа № 2 (вариант 2)
+
+| Параметр | Значение |
+|---|---|
+| Репозиторий | `devops-kr2` (шаблон `kr2-template`), ветка `kr2/variant-2` |
+| Проект на сервере | `/home/devops/kr2` (имя проекта Compose — `kr2`), доставка `rsync --exclude=.env --exclude=.git --chmod=D755,F644` |
+| Сервисы | `app` (образ `kr2-app:1.0`, uid 999) и `redis` (`redis:7-alpine`, пароль, AOF, пользователь `redis`) |
+| Файл `.env` | `/home/devops/kr2/.env`, права `600`, `REDIS_PASSWORD` — `openssl rand -hex 32` |
+| Сеть и том | `kr2_backend`, `kr2_redis_data` → `/data` |
+| Публикация | `127.0.0.1:8002`; порт 6379 не публикуется |
+| Ресурс Nginx | `/etc/nginx/sites-available/kr2`, ссылка в `sites-enabled/`, имя `notes.devops.local` |
+| Сертификат | `/etc/ssl/certs/kr2.crt` (CN и SAN `notes.devops.local`, 365 дней), ключ `/etc/ssl/private/kr2.key`, `root`, `600` |
+| Журналы | `/var/log/nginx/kr2.access.log`, `/var/log/nginx/kr2.error.log` |
+
+```bash
+sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout /etc/ssl/private/kr2.key -out /etc/ssl/certs/kr2.crt \
+  -subj "/CN=notes.devops.local" -addext "subjectAltName=DNS:notes.devops.local"
+sudo chmod 600 /etc/ssl/private/kr2.key
+sudo ln -s /etc/nginx/sites-available/kr2 /etc/nginx/sites-enabled/kr2
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+На хосте в `hosts` добавлена запись `192.168.56.101    notes.devops.local`. Правила UFW не менялись.
+
 ## Проверка
 
 ```bash
@@ -313,7 +340,7 @@ ssh devops
 bash ~/audit.sh; echo "Код возврата: $?"
 ```
 
-На корректной конфигурации: `Пройдено: 14, не пройдено: 0`, код возврата 0.
+На корректной конфигурации: `Пройдено: 19, не пройдено: 0`, код возврата 0.
 При `MaxAuthTries 10` проверка MaxAuthTries даёт `[FAIL]`, код возврата 1.
 Проверка срока сертификата с завышенным порогом: `CERT_MIN_DAYS=400 bash ~/audit.sh` — код возврата 1.
 При публикации `"5000:5000"` в `docker-compose.yml` проверка портов даёт `[FAIL]` (`0.0.0.0:5000 [::]:5000`), код возврата 1.
