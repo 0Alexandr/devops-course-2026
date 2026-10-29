@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Контроль конфигурации сервера devops-vm (практические работы № 5 и 6)
+# Контроль конфигурации сервера devops-vm (практические работы № 5–7)
 set -uo pipefail
 
 PASS=0; FAIL=0
@@ -50,6 +50,16 @@ WORLD_WRITABLE="$(find /var/www/devops-site -perm -o+w | head -n 3 | tr '\n' ' '
 KEY_MODE="$(sudo stat -c '%a' /etc/ssl/private/devops.key)"
 check "Нет файлов ресурса с записью для всех, права ключа 600" "|600" \
       "${WORLD_WRITABLE% }|${KEY_MODE}"
+
+echo "[5] Контейнеризация"
+check "Служба docker активна" "active" "$(systemctl is-active docker)"
+check "Контейнер СУБД в состоянии healthy" "healthy" \
+      "$(docker inspect -f '{{.State.Health.Status}}' app-db-1 2>/dev/null)"
+
+# сокеты портов 5000 и 5432 на любом адресе, кроме 127.0.0.1
+EXPOSED="$(ss -tln | awk '$4 ~ /:(5000|5432)$/ && $4 !~ /^127\.0\.0\.1:/ {print $4}' | tr '\n' ' ')"
+check "Порты 5000 и 5432 прослушиваются только на 127.0.0.1" "" "${EXPOSED% }"
+check "Права файла ~/app/.env равны 600" "600" "$(stat -c '%a' "$HOME/app/.env" 2>/dev/null)"
 
 echo "Пройдено: $PASS, не пройдено: $FAIL"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1
