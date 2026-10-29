@@ -129,6 +129,8 @@ sudo ufw logging medium
 | 01-clean-install | чистая установка, обновления применены |
 | 02-keys-configured | пользователь devops, вход по ключу |
 | 03-ssh-hardened | усиленная конфигурация SSH |
+| 04-nginx-https | Nginx, HTTPS, статический ресурс |
+| 05-docker-compose | Docker Engine, проект `app` (приложение + СУБД) |
 
 ## 8. Веб-сервер
 
@@ -206,7 +208,87 @@ scp devops:/etc/ssl/certs/devops.crt ~/devops.crt
 curl --cacert ~/devops.crt -I https://devops.local    # 200 OK
 ```
 
-## 9. Локальное доменное имя
+## 9. Контейнеризация
+
+| Параметр | Значение |
+|---|---|
+| Docker Engine | 29.9.2 (`docker-ce`), официальный репозиторий `download.docker.com`; пакет `docker.io` не установлен |
+| Плагины | Compose v5.6.1 (`docker-compose-plugin`), Buildx; containerd 2.4.2 |
+| Группа `docker` | только `devops` (имеет право sudo; участник группы фактически получает права root) |
+| Проект на сервере | `/home/devops/app` (имя проекта Compose — `app`), источник — каталог `app/` репозитория |
+| Файл `.env` | `/home/devops/app/.env`, владелец `devops`, права `600`, создаётся только на сервере из `.env.example`, пароль — `openssl rand -hex 16` |
+| Образ приложения | `devops-app:1.0` на `python:3.12-slim`, процесс `gunicorn` от пользователя `app` (uid 999) |
+| СУБД | `postgres:16-alpine`, проверка готовности `pg_isready`, приложение запускается после `service_healthy` |
+| Сеть | пользовательская сеть `app_backend` (bridge), СУБД доступна приложению по имени `db` |
+| Публикуемые порты | `127.0.0.1:5000` → `app:5000`; порт 5432 не публикуется |
+| Именованные тома | `app_db_data` → `/var/lib/postgresql/data` |
+| Перезапуск | `restart: unless-stopped` для обоих сервисов |
+
+Установка Docker Engine:
+
+```bash
+for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do
+  sudo apt-get remove -y $pkg
+done
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+sudo tee /etc/apt/sources.list.d/docker.sources <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+Components: stable
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo usermod -aG docker devops    # затем новая SSH-сессия
+```
+
+Доставка и запуск проекта:
+
+```bash
+# на хосте (WSL), из корня репозитория
+rsync -avz --delete --exclude=.env --chmod=D755,F644 app/ devops:app/
+# на сервере, один раз
+cd ~/app
+cp .env.example .env
+chmod 600 .env
+sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 16)/" .env
+# запуск и обновление
+docker compose up -d --build
+docker compose ps
+```
+
+`--exclude=.env` обязателен: без него `--delete` удалит файл `.env` на сервере.
+`--chmod=D755,F644` нужен из-за WSL: файлы на диске `D:` видны в WSL с правами `777`, и `COPY` перенёс бы их в образ доступными на запись пользователю `app`.
+`docker compose down -v` удаляет том `app_db_data` вместе с базой данных, на рабочем сервере не используется.
+
+Обратный прокси-сервер: в блок HTTPS файла `/etc/nginx/sites-available/devops-site` перед `error_page` добавлено расположение
+(копия файла до изменения — `/root/devops-site.before-app`):
+
+```nginx
+    location /app/ {
+        proxy_pass http://127.0.0.1:5000/;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+```
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+curl --cacert ~/devops.crt https://devops.local/app/         # Hello from Docker, ... Visits: N
+curl --cacert ~/devops.crt -I https://devops.local/          # статический ресурс, 200 OK
+```
+
+Порт, опубликованный на `0.0.0.0` (`-p 5001:5000`), доступен из сети в обход UFW: Docker добавляет правило DNAT в цепочку `DOCKER` таблицы `nat`,
+и пакет перенаправляется до правил UFW. Поэтому приложение публикуется только на `127.0.0.1`, а наружу доступно через Nginx по HTTPS.
+
+## 10. Локальное доменное имя
 
 На хосте (`C:\Windows\System32\drivers\etc\hosts`, PowerShell от имени администратора):
 
@@ -231,9 +313,10 @@ ssh devops
 bash ~/audit.sh; echo "Код возврата: $?"
 ```
 
-На корректной конфигурации: `Пройдено: 10, не пройдено: 0`, код возврата 0.
+На корректной конфигурации: `Пройдено: 14, не пройдено: 0`, код возврата 0.
 При `MaxAuthTries 10` проверка MaxAuthTries даёт `[FAIL]`, код возврата 1.
 Проверка срока сертификата с завышенным порогом: `CERT_MIN_DAYS=400 bash ~/audit.sh` — код возврата 1.
+При публикации `"5000:5000"` в `docker-compose.yml` проверка портов даёт `[FAIL]` (`0.0.0.0:5000 [::]:5000`), код возврата 1.
 
 ## Затруднения при развёртывании
 
@@ -242,3 +325,5 @@ bash ~/audit.sh; echo "Код возврата: $?"
 - `wsl --install` включил компонент «Платформа виртуальных машин», и VirtualBox снова перешёл в режим `NEM` — компоненты `VirtualMachinePlatform` и `HypervisorPlatform` отключены через `dism /disable-feature`, повторно выполнено `bcdedit /set hypervisorlaunchtype off`; WSL версии 1 работает без них.
 - Сохранённое состояние ВМ после изменения компонентов Windows не загружается (`VERR_SSM_LOAD_CONFIG_MISMATCH`) — состояние сброшено, машину выключать командой `sudo poweroff`.
 - Git в WSL считал все файлы изменёнными из-за CRLF рабочей копии Windows — в репозитории задано `core.autocrlf true` (вместе с `core.fileMode false`).
+- Файлы рабочей копии на диске `D:` в WSL имеют права `777`, и `rsync -a` переносил их на сервер без изменений — доставка каталога `app/` выполняется с `--chmod=D755,F644`.
+- Первый запрос к контейнеру сразу после `docker run -d` завершался `Connection reset by peer`: `gunicorn` ещё не успевал начать приём соединений — проверка выполняется после паузы в несколько секунд.
