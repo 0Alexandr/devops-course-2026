@@ -305,6 +305,30 @@ sudo sed -i 's/^127.0.1.1.*/127.0.1.1 devops-vm.devops.local devops-vm/' /etc/ho
 hostname -f   # devops-vm.devops.local
 ```
 
+## 11. Ansible
+
+Проект лежит в домашнем каталоге WSL: `~/devops-course-2026/ansible` (не на `/mnt/c` и не на `/mnt/d`: иначе Ansible игнорирует `ansible.cfg`).
+
+Управляющий узел — WSL с Ansible и sshpass. Управляемый узел — VM `devops-vm` после восстановления снимка `01-clean-install`. Подключение только по Host-only, порт 22.
+
+| Inventory | Учётная запись | Доступ |
+|---|---|---|
+| `inventory/bootstrap.ini` | `student` | первый запуск, пароль SSH и sudo |
+| `inventory/prod.ini` | `devops` | ключ `~/.ssh/devops_vm`, sudo без пароля |
+
+Роли: `base` (пакеты, официальный Docker Engine, `python3-requests`), `ssh` (пользователь, ключ, sudo, hardening, UFW), `nginx` (reverse proxy на порт контейнера), `app` (образ GHCR и контейнер).
+
+Образ: `ghcr.io/0alexandr/devops-ci-app:0a5d9eef7b97008f6d13be24ca07caac9741e905`. Тег — полный SHA зелёного коммита практической работы № 10, не `latest`. Контейнер публикует `127.0.0.1:5000`, снаружи доступен через Nginx, порт 80. Проверка жизнеспособности: `http://<host-only>/health`.
+
+```bash
+cd ~/devops-course-2026/ansible
+ansible-playbook -i inventory/bootstrap.ini site.yml --ask-pass --ask-become-pass
+ansible-playbook site.yml
+ansible-playbook verify.yml
+```
+
+Пароль и закрытый ключ в репозиторий не входят.
+
 ## Проверка
 
 ```bash
